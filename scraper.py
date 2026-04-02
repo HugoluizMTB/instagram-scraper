@@ -1,9 +1,10 @@
 import base64
 import json
+import logging
 import random
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -22,6 +23,13 @@ from config import (
 )
 from models import ScrapedPost, ScrapingProfile
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger("instagram")
+
 
 def _load_cookies() -> list[dict] | None:
     if not INSTAGRAM_COOKIES:
@@ -30,7 +38,7 @@ def _load_cookies() -> list[dict] | None:
         decoded = base64.b64decode(INSTAGRAM_COOKIES).decode()
         return json.loads(decoded)
     except Exception as e:
-        print(f"[Instagram] Failed to decode INSTAGRAM_COOKIES: {e}")
+        log.error(f"Failed to decode INSTAGRAM_COOKIES: {e}")
         return None
 
 
@@ -57,14 +65,14 @@ def _save_cookies_to_env(cookies: list[dict]):
 def scrape_instagram(db: Session) -> int:
     cookies = _load_cookies()
     if not cookies:
-        print("[Instagram] No session found. Run `python login.py` first.")
+        log.error("No session found. Run `python login.py` first.")
         return 0
 
     from playwright.sync_api import sync_playwright
 
     hour = datetime.now().hour
     if hour < SAFE_HOUR_START or hour >= SAFE_HOUR_END:
-        print(f"[Instagram] Outside safe hours ({SAFE_HOUR_START}h-{SAFE_HOUR_END}h). Skipping.")
+        log.warning(f"Outside safe hours ({SAFE_HOUR_START}h-{SAFE_HOUR_END}h). Skipping.")
         return 0
 
     total = 0
@@ -98,18 +106,20 @@ def scrape_instagram(db: Session) -> int:
             for i, (username, display_name) in enumerate(profiles):
                 elapsed = (time.time() - session_start) / 60
                 if elapsed > MAX_SESSION_MINUTES:
-                    print(f"[Instagram] Session limit ({MAX_SESSION_MINUTES}min). Stopped at {i}/{len(profiles)}.")
+                    log.warning(f"Session limit ({MAX_SESSION_MINUTES}min). Stopped at {i}/{len(profiles)}.")
                     break
 
                 try:
                     posts = _scrape_profile_with_comments(page, username)
                     saved = _save_posts(db, username, posts)
                     _update_profile_stats(db, username, saved)
+                    db.commit()
                     total += saved
-                    print(f"[Instagram] @{username}: {saved} new posts")
+                    log.info(f"@{username}: {saved} new posts")
                     time.sleep(random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS))
                 except Exception as e:
-                    print(f"[Instagram] Error @{username}: {e}")
+                    log.error(f"@{username}: {e}")
+                    db.rollback()
                     time.sleep(random.uniform(10, 20))
 
             updated = ctx.cookies()
@@ -117,10 +127,9 @@ def scrape_instagram(db: Session) -> int:
 
             browser.close()
     except Exception as e:
-        print(f"[Instagram] Playwright error: {e}")
+        log.error(f"Playwright error: {e}")
 
-    db.commit()
-    print(f"[Instagram] Done. {total} new posts saved.")
+    log.info(f"Done. {total} new posts saved.")
     return total
 
 
@@ -136,7 +145,7 @@ def _get_profiles(db: Session) -> list[tuple[str, str]]:
     )
 
     if not db_profiles:
-        print("[Instagram] No profiles configured. Use `python cli.py add <username> <name>` to add profiles.")
+        log.warning("No profiles configured. Use `python cli.py add <username> <name>` to add profiles.")
         return []
 
     return [(p.username, p.display_name) for p in db_profiles]
@@ -147,7 +156,7 @@ def _update_profile_stats(db: Session, username: str, new_posts: int):
         select(ScrapingProfile).where(ScrapingProfile.username == username)
     ).scalar_one_or_none()
     if profile:
-        profile.last_scraped_at = datetime.now(datetime.timezone.utc)
+        profile.last_scraped_at = datetime.now(timezone.utc)
         profile.post_count = (profile.post_count or 0) + new_posts
 
 
@@ -161,7 +170,7 @@ def _scrape_profile_with_comments(page, username: str) -> list[dict]:
 
     title = page.title()
     if "disponível" in title.lower() or "not available" in title.lower():
-        print(f"[Instagram] @{username}: profile not available")
+        log.warning(f"@{username}: profile not available")
         return []
 
     post_links = page.query_selector_all("a[href*='/p/']")
@@ -172,7 +181,7 @@ def _scrape_profile_with_comments(page, username: str) -> list[dict]:
     )[:MAX_POSTS_PER_PROFILE]
 
     posts = []
-    cutoff = datetime.now(datetime.timezone.utc).timestamp() - (MAX_DAYS * 86400)
+    cutoff = datetime.now(timezone.utc).timestamp() - (MAX_DAYS * 86400)
 
     for href in hrefs:
         try:
@@ -234,7 +243,7 @@ def _scrape_profile_with_comments(page, username: str) -> list[dict]:
 
             time.sleep(random.uniform(DELAY_BETWEEN_POSTS, DELAY_BETWEEN_POSTS + 5))
         except Exception as e:
-            print(f"[Instagram] Post error {href}: {e}")
+            log.error(f"Post error {href}: {e}")
 
     return posts
 
@@ -331,11 +340,11 @@ def _extract_likes(page) -> int:
 def _save_posts(db: Session, username: str, posts: list[dict]) -> int:
     saved = 0
     for post in posts:
-        caption_hash = post["caption"][:200]
+        url = post.get("url", "")
         existing = db.execute(
             select(ScrapedPost).where(
                 ScrapedPost.source == username,
-                ScrapedPost.title == caption_hash,
+                ScrapedPost.url == url,
             )
         ).scalar_one_or_none()
 
@@ -353,9 +362,9 @@ def _save_posts(db: Session, username: str, posts: list[dict]) -> int:
             db.add(
                 ScrapedPost(
                     source=username,
-                    title=caption_hash,
+                    title=post["caption"][:500],
                     body="\n".join(body_parts),
-                    url=post.get("url", f"https://www.instagram.com/{username}/"),
+                    url=url,
                     image_url=post.get("image_url", ""),
                     score=post.get("likes", 0),
                     comments=len(post.get("comments", [])),
@@ -382,6 +391,5 @@ if __name__ == "__main__":
     db = SessionLocal()
     try:
         count = scrape_instagram(db)
-        print(f"\nTotal new posts: {count}")
     finally:
         db.close()
