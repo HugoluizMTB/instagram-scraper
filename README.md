@@ -1,5 +1,12 @@
 # Instagram Scraper
 
+[![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://python.org)
+[![Playwright](https://img.shields.io/badge/Playwright-2DA44E?logo=playwright&logoColor=white)](https://playwright.dev)
+[![SQLite](https://img.shields.io/badge/SQLite-003B57?logo=sqlite&logoColor=white)](https://sqlite.org)
+[![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](https://docker.com)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![GitHub](https://img.shields.io/badge/@HugoluizMTB-181717?logo=github&logoColor=white)](https://github.com/HugoluizMTB)
+
 A Python-based Instagram scraper using Playwright with session-based authentication. Scrapes posts, captions, comments, and likes from public profiles — no API keys needed.
 
 Built with safety-first design: rate limiting, session management, and anti-detection measures to minimize the risk of account restrictions.
