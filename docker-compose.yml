@@ -1,0 +1,12 @@
+services:
+  scraper:
+    build: .
+    env_file: .env
+    volumes:
+      - scraper_data:/app/data  # SQLite database
+    # Run once (default) or override with a scheduler
+    # To run on a schedule, uncomment and adjust:
+    # command: sh -c "while true; do python scraper.py; sleep 21600; done"
+
+volumes:
+  scraper_data:
